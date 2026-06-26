@@ -186,7 +186,7 @@ The training process should emit snapshots or logs that the UI can read without 
 When training starts, add these modules on top of the simulator:
 
 ```text
-zip_game/
+zip/simulation/
 ├── environment.py     # Gymnasium environment
 ├── callbacks.py       # Training logging, snapshots, and videos
 ├── train.py           # RL training entrypoint

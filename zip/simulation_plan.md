@@ -347,7 +347,7 @@ Add tests before the system gets large.
 ## 9. Suggested Module Structure
 
 ```text
-zip_game/
+zip/simulation/
 ├── __init__.py
 ├── config.py          # DifficultyConfig and UI config
 ├── puzzle.py          # Immutable Puzzle model and serialization
