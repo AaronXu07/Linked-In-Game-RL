@@ -451,7 +451,7 @@ class ZipGameUI:
 
     def _draw_board_content(self, screen: object, font: object, pygame: object, layout: BoardLayout) -> None:
         board_rect = (layout.origin_x, layout.origin_y, layout.width, layout.height)
-        board_radius = max(18, layout.cell_size // 4)
+        board_radius = max(4, layout.cell_size // 4)
         pygame.draw.rect(screen, (255, 255, 255), board_rect, border_radius=board_radius)
 
         for cell in self.state.path:
@@ -473,7 +473,7 @@ class ZipGameUI:
 
         for cell in self.puzzle.waypoints:
             center = layout.cell_center(cell)
-            pygame.draw.circle(screen, (12, 12, 12), center, max(30, int(layout.cell_size * 0.42)))
+            pygame.draw.circle(screen, (12, 12, 12), center, max(8, int(layout.cell_size * 0.42)))
             label = str((self.puzzle.waypoint_index(cell) or 0) + 1)
             surface = font.render(label, True, (255, 255, 255))
             screen.blit(surface, surface.get_rect(center=center))
@@ -484,10 +484,10 @@ class ZipGameUI:
                 screen,
                 self._path_color(self._path_fill()),
                 (round(current_center[0]), round(current_center[1])),
-                max(18, layout.cell_size // 5),
+                max(5, layout.cell_size // 5),
             )
 
-        pygame.draw.rect(screen, (12, 12, 12), board_rect, max(4, layout.cell_size // 20), border_radius=board_radius)
+        pygame.draw.rect(screen, (12, 12, 12), board_rect, max(2, layout.cell_size // 20), border_radius=board_radius)
 
     def _draw_path_cell_background(
         self,
@@ -531,7 +531,7 @@ class ZipGameUI:
 
     def _draw_fluid_path(self, screen: object, pygame: object, points: list[tuple[float, float]], layout: BoardLayout) -> None:
         curve = self._rounded_path_points(points, layout)
-        width = max(24, layout.cell_size // 3)
+        width = max(6, layout.cell_size // 3)
         int_points = [(round(x), round(y)) for x, y in curve]
         radius = width // 2
         path_fill = self._path_fill()
@@ -592,7 +592,7 @@ class ZipGameUI:
 
     def _draw_wall(self, screen: object, pygame: object, a: Coordinate, b: Coordinate, layout: BoardLayout) -> None:
         ax, ay, aw, ah = layout.cell_rect(a)
-        thickness = max(12, layout.cell_size // 7)
+        thickness = max(4, layout.cell_size // 7)
         if a[0] == b[0]:
             x = ax + aw if a[1] < b[1] else ax
             rect = (x - thickness // 2, ay, thickness, ah)

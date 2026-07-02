@@ -1,2 +1,7 @@
+gymnasium>=1.0,<2
+numpy>=2.0,<3
 pygame>=2.6,<3
 pytest>=8.0,<9
+tensorboard>=2.16,<3
+torch>=2.3,<3
+tqdm>=4.66,<5

@@ -1,9 +1,9 @@
 # Zip simulator
 
-Standalone LinkedIn Zip-style simulator with no RL or training code.
+Standalone LinkedIn Zip-style simulator with an RL training layer beside it.
 
-Simulator code and tests live in `zip/simulation/` so future agent, model, and
-training components can sit beside it cleanly.
+Simulator code and tests live in `zip/simulation/`; agent, model, environment,
+and training components live in `zip/training/`.
 
 ## Setup
 
@@ -90,6 +90,48 @@ Useful entry points:
 - `zip.simulation.renderer.render_ansi` and `render_image` for debug rendering
 - `python3 -m zip.simulation.ui --difficulty easy` for the optional Pygame UI
 
+## Training
+
+The first training milestone implements a Gymnasium environment plus a compact
+masked DQN pipeline:
+
+```bash
+python3 -m zip.training.train \
+  --difficulty super_easy \
+  --total-steps 200000 \
+  --seed 0 \
+  --log-dir runs/zip_super_easy \
+  --checkpoint-dir checkpoints/zip_super_easy
+```
+
+Evaluate a checkpoint against held-out generated seeds:
+
+```bash
+python3 -m zip.training.evaluate \
+  --checkpoint-path checkpoints/zip_super_easy/latest.pt \
+  --difficulty super_easy \
+  --episodes 100
+```
+
+The environment adapts the simulator directly: moves are applied through
+`zip.simulation.step`, action masks come from `legal_moves`, and observations
+are channel-first NumPy grids for PyTorch.
+
+To watch training happen live in the Pygame UI:
+
+```bash
+python3 -m zip.training.visual_train \
+  --difficulty super_easy \
+  --steps-per-second 8 \
+  --warmup-steps 64 \
+  --batch-size 32 \
+  --device cpu
+```
+
+The visual trainer uses the same board renderer as manual play. Use
+Space/Pause to pause, `s` or **Single Step** to advance one training action,
+and **Save Checkpoint** to write `checkpoints/zip_visual/visual_latest.pt`.
+
 ## File Map
 
 Top-level Zip files:
@@ -97,7 +139,7 @@ Top-level Zip files:
 - `zip/README.md`: this guide.
 - `zip/__init__.py`: game-level package wrapper that re-exports simulation APIs.
 - `zip/simulation_plan.md`: simulator requirements and implementation plan.
-- `zip/training_plan.md`: future RL/training plan; not implemented yet.
+- `zip/training_plan.md`: RL/training implementation plan.
 
 Simulation package:
 
@@ -114,10 +156,29 @@ Simulation package:
 - `zip/simulation/ui.py`: optional Pygame mouse-playable UI and playback tools.
 - `zip/simulation/tests/`: simulator unit tests.
 
+Training package:
+
+- `zip/training/env.py`: Gymnasium environment adapter with action masks.
+- `zip/training/observations.py`: channel-first grid observation encoder.
+- `zip/training/rewards.py`: pure reward calculation.
+- `zip/training/models.py`: compact convolutional DQN.
+- `zip/training/replay.py`: replay buffer and transition batches.
+- `zip/training/agent.py`: masked DQN action selection, optimization, evaluation, and checkpoints.
+- `zip/training/train.py`: training CLI.
+- `zip/training/evaluate.py`: checkpoint evaluation CLI.
+- `zip/training/visual_train.py`: Pygame visual training CLI.
+- `zip/training/tests/`: training-layer unit and smoke tests.
+
 ## Tests
 
 Run from the repository root:
 
 ```bash
 python3 -m pytest zip/simulation/tests -q
+```
+
+Run the training tests after installing the full requirements:
+
+```bash
+python3 -m pytest zip/training/tests -q
 ```
