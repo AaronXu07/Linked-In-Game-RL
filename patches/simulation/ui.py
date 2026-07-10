@@ -145,13 +145,25 @@ class PatchesGameUI:
         self.active_clue_id: int | None = None
         self.drag_anchor: Coordinate | None = None
         self.drag_cell: Coordinate | None = None
-        # Farthest row/col offset (signed, relative to the anchor) reached so
-        # far during the current drag. A drag only ever grows the patch: if
-        # the cursor moves back toward the anchor, these offsets are left
-        # alone instead of shrinking, so backtracking never "undoes" progress
-        # made earlier in the same drag gesture.
-        self.drag_row_offset = 0
-        self.drag_col_offset = 0
+        # The exact grid cell where the mouse button was pressed — used to
+        # distinguish a click (press and release on the same cell) from a drag.
+        self.drag_start_cell: Coordinate | None = None
+        # Bounding box of the current drag gesture — each axis only ever
+        # expands, never contracts, so the patch can grow in any direction
+        # but can never be shrunk by moving the cursor back.
+        self.drag_min_row = 0
+        self.drag_max_row = 0
+        self.drag_min_col = 0
+        self.drag_max_col = 0
+        # Seeded size at drag start — the clamp never shrinks below this.
+        self.drag_seed_min_row = 0
+        self.drag_seed_max_row = 0
+        self.drag_seed_min_col = 0
+        self.drag_seed_max_col = 0
+        # Per-clue visual rect: updated on every drag release (valid or not)
+        # so the board always shows the last size the user set, even if it
+        # violates the puzzle rules. Cleared when the user clicks the patch.
+        self.pending_rects: dict[int, Rect] = {}
         self.hover_cell: Coordinate | None = None
 
         self.feedback = "Drag a box around a clue to fill it"
@@ -270,8 +282,16 @@ class PatchesGameUI:
         self.active_clue_id = None
         self.drag_anchor = None
         self.drag_cell = None
-        self.drag_row_offset = 0
-        self.drag_col_offset = 0
+        self.drag_start_cell = None
+        self.drag_min_row = 0
+        self.drag_max_row = 0
+        self.drag_min_col = 0
+        self.drag_max_col = 0
+        self.drag_seed_min_row = 0
+        self.drag_seed_max_row = 0
+        self.drag_seed_min_col = 0
+        self.drag_seed_max_col = 0
+        self.pending_rects = {}
         self._fit_layout_to_window_limits()
         self._rebuild_buttons()
 
@@ -336,119 +356,210 @@ class PatchesGameUI:
         cell = self.layout.pixel_to_cell(*pos)
         if cell is None:
             return
+
         clue = self.puzzle.clue_at(cell)
+
+        # If the cell isn't a clue, check if it's inside an existing patch or
+        # pending rect — if so, use that patch's clue as the drag target.
+        if clue is None:
+            owner_id = self.state.assignment.get(cell)
+            if owner_id is None:
+                for cid, rect in self.pending_rects.items():
+                    if rect.contains(cell):
+                        owner_id = cid
+                        break
+            if owner_id is not None:
+                clue = self.puzzle.clue(owner_id)
+
         if clue is not None:
-            # A drag is anchored on the clue and grows toward the cursor. If
-            # the mouse never moves away before release, this resolves as a
-            # click instead (see `_handle_mouse_up`).
+            # A drag starts from the existing patch size (if any), so the user
+            # can only expand it further. If the mouse never moves, release
+            # resolves as a click-to-clear instead (see `_handle_mouse_up`).
+            anchor_row, anchor_col = clue.pos
             self.dragging = True
             self.active_clue_id = clue.id
             self.drag_anchor = clue.pos
+            self.drag_start_cell = cell
             self.drag_cell = cell
-            self.drag_row_offset = 0
-            self.drag_col_offset = 0
-            self._drag_row_dir = 0
-            self._drag_col_dir = 0
+
+            # Seed the bounding box from the existing pending/committed rect so
+            # continuing a drag can only grow the patch, never shrink it.
+            existing = self.pending_rects.get(clue.id) or self.state.patches.get(clue.id)
+            if existing is not None:
+                self.drag_min_row = existing.top
+                self.drag_max_row = existing.top + existing.height - 1
+                self.drag_min_col = existing.left
+                self.drag_max_col = existing.left + existing.width - 1
+            else:
+                self.drag_min_row = anchor_row
+                self.drag_max_row = anchor_row
+                self.drag_min_col = anchor_col
+                self.drag_max_col = anchor_col
+            # Remember the seeded size — the clamp must never shrink below this.
+            self.drag_seed_min_row = self.drag_min_row
+            self.drag_seed_max_row = self.drag_max_row
+            self.drag_seed_min_col = self.drag_min_col
+            self.drag_seed_max_col = self.drag_max_col
         else:
-            # Pressing an empty/filled non-clue cell is a click (clear), not a drag.
+            # Pressing a truly empty cell with no patch — nothing to do.
             self.dragging = False
             self.active_clue_id = None
             self.drag_anchor = None
             self.drag_cell = None
-            self.drag_row_offset = 0
-            self.drag_col_offset = 0
 
     def _handle_mouse_motion(self, pos: tuple[int, int]) -> None:
         self.hover_cell = self.layout.pixel_to_cell(*pos)
         if self.dragging and self.drag_anchor is not None:
             cell = self.layout.clamp_to_cell(*pos)
-            row_offset = cell[0] - self.drag_anchor[0]
-            col_offset = cell[1] - self.drag_anchor[1]
+            row, col = cell
 
-            # Each axis locks onto the first non-zero direction the cursor
-            # moves. Once a direction is locked, movement in the opposite
-            # direction is ignored so the patch can only grow, never shrink.
-            # The lock resets only when a new drag starts (mouse down).
-            if not hasattr(self, "_drag_row_dir"):
-                self._drag_row_dir = 0
-                self._drag_col_dir = 0
+            # Expand the bounding box to include the cursor — never shrink it.
+            new_min_row = min(self.drag_min_row, row)
+            new_max_row = max(self.drag_max_row, row)
+            new_min_col = min(self.drag_min_col, col)
+            new_max_col = max(self.drag_max_col, col)
 
-            if self._drag_row_dir == 0 and row_offset != 0:
-                self._drag_row_dir = 1 if row_offset > 0 else -1
-            if self._drag_col_dir == 0 and col_offset != 0:
-                self._drag_col_dir = 1 if col_offset > 0 else -1
-
-            # Only apply the offset if it matches the locked direction;
-            # movement against the locked direction is clamped to the current
-            # farthest extent so the box never shrinks.
-            if self._drag_row_dir == 0:
-                # No direction locked yet — stay at anchor
-                self.drag_row_offset = 0
-            elif self._drag_row_dir > 0:
-                self.drag_row_offset = max(self.drag_row_offset, max(row_offset, 0))
-            else:
-                self.drag_row_offset = min(self.drag_row_offset, min(row_offset, 0))
-
-            if self._drag_col_dir == 0:
-                self.drag_col_offset = 0
-            elif self._drag_col_dir > 0:
-                self.drag_col_offset = max(self.drag_col_offset, max(col_offset, 0))
-            else:
-                self.drag_col_offset = min(self.drag_col_offset, min(col_offset, 0))
-
-            self.drag_cell = (
-                self.drag_anchor[0] + self.drag_row_offset,
-                self.drag_anchor[1] + self.drag_col_offset,
+            # Clamp each edge so the box never engulfs a foreign clue cell,
+            # but never allow the clamp to shrink below the seeded size.
+            new_min_row, new_max_row, new_min_col, new_max_col = (
+                self._clamp_bbox_to_own_clue(
+                    self.active_clue_id,
+                    new_min_row, new_max_row, new_min_col, new_max_col,
+                    self.drag_seed_min_row, self.drag_seed_max_row,
+                    self.drag_seed_min_col, self.drag_seed_max_col,
+                )
             )
+
+            self.drag_min_row = new_min_row
+            self.drag_max_row = new_max_row
+            self.drag_min_col = new_min_col
+            self.drag_max_col = new_max_col
+
+            # drag_cell is the far corner of the bounding box opposite the
+            # anchor, used by _current_preview and _handle_mouse_up.
+            anchor_row, anchor_col = self.drag_anchor
+            far_row = self.drag_min_row if anchor_row == self.drag_max_row else self.drag_max_row
+            far_col = self.drag_min_col if anchor_col == self.drag_max_col else self.drag_max_col
+            self.drag_cell = (far_row, far_col)
+
+    def _clamp_bbox_to_own_clue(
+        self,
+        clue_id: int,
+        min_row: int, max_row: int, min_col: int, max_col: int,
+        seed_min_row: int, seed_max_row: int, seed_min_col: int, seed_max_col: int,
+    ) -> tuple[int, int, int, int]:
+        """Clamp each edge of the candidate bbox so no foreign clue is enclosed.
+
+        Each edge is retracted only as far as the foreign clue demands, and
+        never past the seeded size — so dragging over another anchor can never
+        shrink the patch below what it already was.
+        """
+        anchor_row, anchor_col = self.puzzle.clue(clue_id).pos
+
+        for clue in self.puzzle.clues:
+            if clue.id == clue_id:
+                continue
+            fr, fc = clue.pos
+
+            if not (min_row <= fr <= max_row and min_col <= fc <= max_col):
+                continue
+
+            # Retract only the edge on the far side of the foreign clue from
+            # the anchor, but never shrink below the seeded size.
+            # min edges move inward (increase) — floor at seed value so they
+            # can never be pushed past the seed minimum.
+            # max edges move inward (decrease) — floor at seed value so they
+            # can never be pushed below the seed maximum.
+            if fr < anchor_row:
+                min_row = max(fr + 1, seed_min_row)
+            elif fr > anchor_row:
+                max_row = max(min(max_row, fr - 1), seed_max_row)
+
+            if fc < anchor_col:
+                min_col = max(fc + 1, seed_min_col)
+            elif fc > anchor_col:
+                max_col = max(min(max_col, fc - 1), seed_max_col)
+
+        return min_row, max_row, min_col, max_col
 
     def _handle_mouse_up(self, pos: tuple[int, int]) -> None:
         if self.dragging and self.active_clue_id is not None:
             clue_id = self.active_clue_id
             clue = self.puzzle.clue(clue_id)
-            end_cell = self.drag_cell or clue.pos
+            # Capture bbox before resetting state.
+            bbox_min_row = self.drag_min_row
+            bbox_max_row = self.drag_max_row
+            bbox_min_col = self.drag_min_col
+            bbox_max_col = self.drag_max_col
+            drag_start_cell = self.drag_start_cell
             self.dragging = False
             self.active_clue_id = None
             self.drag_anchor = None
             self.drag_cell = None
-            self.drag_row_offset = 0
-            self.drag_col_offset = 0
-            self._drag_row_dir = 0
-            self._drag_col_dir = 0
+            self.drag_start_cell = None
+            self.drag_min_row = 0
+            self.drag_max_row = 0
+            self.drag_min_col = 0
+            self.drag_max_col = 0
+            self.drag_seed_min_row = 0
+            self.drag_seed_max_row = 0
+            self.drag_seed_min_col = 0
+            self.drag_seed_max_col = 0
 
-            rect = rect_from_corners(clue.pos, end_cell)
-            if end_cell == clue.pos and rect.area == 1:
-                # Pressed and released on the clue without ever dragging out
-                # a box. If the clue already has a patch, this is a click to
-                # clear it. Otherwise it either commits a size-1 patch or
-                # nudges the user to drag.
-                if clue_id in self.state.patches:
+            rect = Rect(
+                bbox_min_row,
+                bbox_min_col,
+                bbox_max_row - bbox_min_row + 1,
+                bbox_max_col - bbox_min_col + 1,
+            )
+
+            # A click is defined strictly as press and release on the same
+            # grid cell. Any movement to a different cell — even if the bbox
+            # ended up identical due to clamping — counts as a drag.
+            release_cell = self.layout.pixel_to_cell(*pos)
+            had_drag = release_cell != drag_start_cell
+            if not had_drag:
+                # No motion — treat as a plain click on the clue cell.
+                if clue_id in self.state.patches or clue_id in self.pending_rects:
                     self.state = clear_patch(self.state, clue_id)
+                    self.pending_rects.pop(clue_id, None)
                     self.reveal_index = 0
                     self._show_feedback("Cleared patch")
                 elif clue.number == 1:
+                    self.pending_rects[clue_id] = rect
                     self._place_clue(clue_id, rect)
                 else:
                     self._show_feedback("Drag from the clue to size the patch")
             else:
+                # The user dragged out a box — always store it visually and
+                # try to commit it. If invalid, the visual rect stays so the
+                # user can see what they set; only a click will clear it.
+                self.pending_rects[clue_id] = rect
                 self._place_clue(clue_id, rect)
             return
 
-        # Not a drag: a plain click clears whatever patch owns the cell.
-        cell = self.layout.pixel_to_cell(*pos)
-        if cell is not None:
-            self._clear_at(cell)
+        # Mouse-down was on an empty cell (no patch, no clue) — nothing to do.
 
     def _clear_at(self, cell: Coordinate) -> None:
         owner = self.state.assignment.get(cell)
         if owner is not None:
             self.state = clear_patch(self.state, owner)
+            self.pending_rects.pop(owner, None)
             self.reveal_index = 0
             self._show_feedback("Cleared patch")
+        else:
+            # Cell may be covered by a pending (invalid) rect — clear that too.
+            for clue_id, rect in list(self.pending_rects.items()):
+                if rect.contains(cell):
+                    self.pending_rects.pop(clue_id, None)
+                    self._show_feedback("Cleared patch")
+                    break
 
     def _place_clue(self, clue_id: int, rect: Rect) -> None:
         result = place(self.puzzle, self.state, clue_id, rect)
         if result.valid:
             self.state = result.state
+            self.pending_rects[clue_id] = rect
             self.reveal_index = 0
             self._show_feedback("Solved!" if result.solved else "Patch placed")
         else:
@@ -465,14 +576,22 @@ class PatchesGameUI:
 
     def _undo(self) -> None:
         self.state = undo(self.state)
+        # Rebuild pending_rects to match the rolled-back state so visuals stay
+        # in sync: keep only entries that match a patch in the new state.
+        self.pending_rects = {
+            cid: rect for cid, rect in self.pending_rects.items()
+            if self.state.patches.get(cid) == rect
+        }
         self.reveal_index = 0
 
     def _reset(self) -> None:
         self.state = reset(self.puzzle)
+        self.pending_rects = {}
         self.reveal_index = 0
 
     def _clear_all(self) -> None:
         self.state = reset(self.puzzle)
+        self.pending_rects = {}
         self.reveal_index = 0
         self._show_feedback("Board cleared")
 
@@ -518,6 +637,8 @@ class PatchesGameUI:
             if result.valid:
                 state = result.state
         self.state = state
+        # Sync pending_rects to the revealed state.
+        self.pending_rects = dict(state.patches)
 
     def _show_feedback(self, text: str) -> None:
         self.feedback = text
@@ -527,10 +648,17 @@ class PatchesGameUI:
     def _current_preview(self) -> tuple[Rect, int | None, bool] | None:
         """Return ``(rect, clue_id, valid)`` for the in-progress drag, if any."""
 
-        if not self.dragging or self.active_clue_id is None or self.drag_cell is None:
+        if not self.dragging or self.active_clue_id is None:
             return None
         clue = self.puzzle.clue(self.active_clue_id)
-        rect = rect_from_corners(clue.pos, self.drag_cell)
+        # Build the preview rect from the full bounding box of the drag so
+        # it reflects expansion in all directions.
+        rect = Rect(
+            self.drag_min_row,
+            self.drag_min_col,
+            self.drag_max_row - self.drag_min_row + 1,
+            self.drag_max_col - self.drag_min_col + 1,
+        )
         valid = validate_placement(self.puzzle, self.state, self.active_clue_id, rect).valid
         return rect, self.active_clue_id, valid
 
@@ -628,8 +756,17 @@ class PatchesGameUI:
         # mask over the whole board, not per-cell.
         pygame.draw.rect(surface, BOARD_BG, board_rect)
 
-        for clue_id, rect in self.state.patches.items():
-            self._draw_patch(surface, pygame, layout, rect, self._patch_color(clue_id))
+        # Draw all pending rects first (valid and invalid alike). Valid ones
+        # (those also in self.state.patches) render with the normal solid
+        # border; invalid ones get a muted fill and a red dashed border so
+        # the user can see the size they set but knows it isn't committed.
+        for clue_id, rect in self.pending_rects.items():
+            color = self._patch_color(clue_id)
+            is_valid = clue_id in self.state.patches and self.state.patches[clue_id] == rect
+            if is_valid:
+                self._draw_patch(surface, pygame, layout, rect, color)
+            else:
+                self._draw_patch_invalid(surface, pygame, layout, rect, color)
 
         preview = self._current_preview()
         if preview is not None:
@@ -712,6 +849,36 @@ class PatchesGameUI:
         # square; only the outer board edge is rounded.
         pygame.draw.rect(surface, self._lighten(color, 0.6), region)
         pygame.draw.rect(surface, color, region, max(3, int(layout.cell_size * 0.05)))
+
+    def _draw_patch_invalid(
+        self,
+        surface: object,
+        pygame: object,
+        layout: BoardLayout,
+        rect: Rect,
+        color: tuple[int, int, int],
+    ) -> None:
+        """Draw a pending patch that hasn't passed validation yet.
+
+        Uses a muted fill and a red dashed border so it's visually distinct
+        from a committed patch, signalling the size is set but not valid.
+        """
+        region = layout.region_rect(rect)
+        # Muted fill — lighten more than normal to visually de-emphasise.
+        pygame.draw.rect(surface, self._lighten(color, 0.82), region)
+        # Dashed red border.
+        border = max(2, int(layout.cell_size * 0.05))
+        dash = max(4, int(layout.cell_size * 0.18))
+        gap = max(3, int(layout.cell_size * 0.10))
+        x, y, w, h = region
+        # Top edge
+        self._draw_dotted_line(surface, pygame, (x, y), (x + w, y), INVALID_PREVIEW, border, dash, gap)
+        # Bottom edge
+        self._draw_dotted_line(surface, pygame, (x, y + h), (x + w, y + h), INVALID_PREVIEW, border, dash, gap)
+        # Left edge
+        self._draw_dotted_line(surface, pygame, (x, y), (x, y + h), INVALID_PREVIEW, border, dash, gap)
+        # Right edge
+        self._draw_dotted_line(surface, pygame, (x + w, y), (x + w, y + h), INVALID_PREVIEW, border, dash, gap)
 
     def _draw_preview(
         self,
