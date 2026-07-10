@@ -653,11 +653,27 @@ class PatchesGameUI:
         clue = self.puzzle.clue(self.active_clue_id)
         # Build the preview rect from the full bounding box of the drag so
         # it reflects expansion in all directions.
+        min_row = self.drag_min_row
+        max_row = self.drag_max_row
+        min_col = self.drag_min_col
+        max_col = self.drag_max_col
+        if self.drag_cell is not None:
+            row, col = self.drag_cell
+            anchor_row, anchor_col = clue.pos
+            bbox_contains_drag = min_row <= row <= max_row and min_col <= col <= max_col
+            bbox_contains_anchor = (
+                min_row <= anchor_row <= max_row and min_col <= anchor_col <= max_col
+            )
+            if not (bbox_contains_drag and bbox_contains_anchor):
+                min_row = min(anchor_row, row)
+                max_row = max(anchor_row, row)
+                min_col = min(anchor_col, col)
+                max_col = max(anchor_col, col)
         rect = Rect(
-            self.drag_min_row,
-            self.drag_min_col,
-            self.drag_max_row - self.drag_min_row + 1,
-            self.drag_max_col - self.drag_min_col + 1,
+            min_row,
+            min_col,
+            max_row - min_row + 1,
+            max_col - min_col + 1,
         )
         valid = validate_placement(self.puzzle, self.state, self.active_clue_id, rect).valid
         return rect, self.active_clue_id, valid

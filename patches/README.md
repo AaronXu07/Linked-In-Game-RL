@@ -1,9 +1,10 @@
-# Patches simulator
+# Patches simulator and training
 
 Standalone LinkedIn Patches-style rectangle-packing simulator.
 
-Simulator code and tests live in `patches/simulation/`. A future RL training
-layer will live in `patches/training/`.
+Simulator code and tests live in `patches/simulation/`. The Gymnasium
+environment, candidate-conditioned DQN agent, checkpoints, curriculum helpers,
+evaluation CLI, and visual trainer live in `patches/training/`.
 
 ## Game Rules
 
@@ -108,19 +109,78 @@ Useful entry points:
 - `patches.simulation.solve` / `find_solution` for solvability and uniqueness
 - `patches.simulation.renderer.render_ansi` / `render_image` for debug rendering
 
+## Training
+
+Run headless candidate-DQN training:
+
+```bash
+python3 -m patches.training.train \
+  --difficulty medium \
+  --curriculum default \
+  --parallel-envs 4 \
+  --parallel-puzzles 4 \
+  --checkpoint-dir checkpoints/patches_medium_curriculum
+```
+
+Watch live visual training with multiple boards:
+
+```bash
+python3 -m patches.training.visual_train \
+  --difficulty medium \
+  --curriculum default \
+  --parallel-puzzles 4 \
+  --checkpoint-every 1000
+```
+
+Resume a saved visual run:
+
+```bash
+python3 -m patches.training.visual_train \
+  --difficulty medium \
+  --curriculum default \
+  --parallel-puzzles 4 \
+  --checkpoint-path checkpoints/patches_visual/visual_latest.pt
+```
+
+Evaluate a saved checkpoint:
+
+```bash
+python3 -m patches.training.evaluate \
+  --checkpoint-path checkpoints/patches_super_easy/latest.pt \
+  --difficulty super_easy \
+  --episodes 100
+```
+
+The visual trainer writes `visual_latest.pt`, `visual_best.pt`, and
+`visual_interrupted.pt` under `checkpoints/patches_visual` by default. These
+checkpoints include model weights, target network weights, optimizer state,
+training counters, and curriculum metadata so training can continue after the
+program closes.
+
+`--curriculum default` uses the same shape as Zip: train on `super_easy`, then
+mix each previous/current difficulty before moving to the current difficulty
+alone. Held-out evaluation gates advance the active stage, and async puzzle
+buffers discard stale prefetched boards when the curriculum stage changes.
+
 ## Tests
 
 Run from the repository root:
 
 ```bash
 python3 -m pytest patches/simulation/tests -q
+python3 -m pytest patches/training/tests -q
 ```
 
 ## Status
 
 Implemented: puzzle/clue model, shared rules, simulator API, exact-cover solver
 with uniqueness checking, solution-first generator, ANSI/PPM renderers, and the
-mouse-playable Pygame UI (`ui.py`).
+mouse-playable Pygame UI (`ui.py`). Training includes dynamic placement action
+masks, dictionary observations, a candidate-conditioned DQN, replay buffer,
+curriculum/evaluation/checkpoint callbacks, headless training, checkpoint
+evaluation, and multi-board visual training.
 
-`pygame` is only needed for the playable window; the core simulator, generator,
-solver, JSON handling, and ANSI renderer use the Python standard library.
+`pygame` is only needed for the playable and visual training windows; the core
+simulator, generator, solver, JSON handling, and ANSI renderer use the Python
+standard library. Training additionally requires the dependencies in the root
+`requirements.txt`.
