@@ -105,12 +105,16 @@ class DifficultySampler:
 class CurriculumManager:
     """Stateful curriculum controller used by training and visual training."""
 
+    # Number of consecutive evaluation passes required before promotion.
+    DEFAULT_CONSECUTIVE_PASSES = 3
+
     def __init__(
         self,
         stages: Iterable[CurriculumStage],
         *,
         seed: int | None = None,
         stage_index: int = 0,
+        consecutive_passes_required: int = DEFAULT_CONSECUTIVE_PASSES,
     ) -> None:
         self.stages = tuple(stages)
         if not self.stages:
@@ -123,6 +127,8 @@ class CurriculumManager:
         self.rng = Random(seed)
         self.version = 0
         self.last_success_rate: float | None = None
+        self.consecutive_passes_required = max(1, int(consecutive_passes_required))
+        self._consecutive_passes = 0
 
     @property
     def current_stage(self) -> CurriculumStage:
@@ -144,9 +150,18 @@ class CurriculumManager:
         stage = self.current_stage
         self.last_success_rate = float(metrics.get("success_rate", 0.0))
         if self.done or stage.min_success_rate is None:
+            self._consecutive_passes = 0
             return False
         if self.last_success_rate < stage.min_success_rate:
+            # Failed the gate — reset the streak counter.
+            self._consecutive_passes = 0
             return False
+        # Passed the gate this evaluation — count toward consecutive requirement.
+        self._consecutive_passes += 1
+        if self._consecutive_passes < self.consecutive_passes_required:
+            return False
+        # Enough consecutive passes — promote to next stage.
+        self._consecutive_passes = 0
         self.stage_index += 1
         self.version += 1
         return True
@@ -157,6 +172,8 @@ class CurriculumManager:
             "stage_name": self.current_stage.name,
             "version": self.version,
             "last_success_rate": self.last_success_rate,
+            "consecutive_passes": self._consecutive_passes,
+            "consecutive_passes_required": self.consecutive_passes_required,
         }
 
     def load_state_dict(self, state: dict[str, object]) -> None:
@@ -166,11 +183,16 @@ class CurriculumManager:
         if stage_index != self.stage_index:
             self.stage_index = stage_index
             self.version += 1
+            self._consecutive_passes = 0
+        else:
+            self._consecutive_passes = int(state.get("consecutive_passes", 0))
         self.last_success_rate = (
             None
             if state.get("last_success_rate") is None
             else float(state["last_success_rate"])
         )
+        if "consecutive_passes_required" in state:
+            self.consecutive_passes_required = max(1, int(state["consecutive_passes_required"]))
 
 
 class CurriculumStateCallback:
@@ -230,6 +252,8 @@ class CurriculumEvaluationCallback:
                 "curriculum_advanced": float(advanced),
                 "curriculum_eval_difficulty": difficulty,
                 "curriculum_stage": stage_before.name,
+                "curriculum_consecutive_passes": float(self.manager._consecutive_passes),
+                "curriculum_consecutive_required": float(self.manager.consecutive_passes_required),
             }
         )
         agent.checkpoint_metadata["curriculum"] = self.manager.state_dict()
@@ -343,6 +367,7 @@ def curriculum_from_name(
     *,
     target_difficulty: str,
     seed: int | None = None,
+    consecutive_passes_required: int = CurriculumManager.DEFAULT_CONSECUTIVE_PASSES,
 ) -> CurriculumManager | None:
     if name is None or name.strip().lower() in {"", "none", "off", "false"}:
         return None
@@ -352,6 +377,7 @@ def curriculum_from_name(
     return CurriculumManager(
         build_default_curriculum(target_difficulty),
         seed=seed,
+        consecutive_passes_required=consecutive_passes_required,
     )
 
 

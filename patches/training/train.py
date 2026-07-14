@@ -170,7 +170,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-dir", default="checkpoints/patches_super_easy")
     parser.add_argument("--checkpoint-every", type=int, default=10_000)
     parser.add_argument("--eval-every", type=int, default=10_000)
-    parser.add_argument("--eval-episodes", type=int, default=20)
+    parser.add_argument("--eval-episodes", type=int, default=50)
     parser.add_argument("--eval-seeds", default="")
     parser.add_argument("--log-dir", default="runs/patches_super_easy")
     parser.add_argument("--episode-jsonl", default=None)

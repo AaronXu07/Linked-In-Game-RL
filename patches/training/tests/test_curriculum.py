@@ -43,6 +43,7 @@ def test_curriculum_advances_when_success_gate_is_met() -> None:
             CurriculumStage("second", ("easy",)),
         ),
         seed=7,
+        consecutive_passes_required=1,
     )
 
     assert not manager.update_from_evaluation({"success_rate": 0.49})
@@ -54,6 +55,45 @@ def test_curriculum_advances_when_success_gate_is_met() -> None:
     assert manager.current_stage.name == "second"
     assert manager.last_success_rate == 0.5
     assert manager.version == 1
+
+
+def test_curriculum_requires_consecutive_passes() -> None:
+    manager = CurriculumManager(
+        (
+            CurriculumStage("first", ("super_easy",), min_success_rate=0.5),
+            CurriculumStage("second", ("easy",)),
+        ),
+        seed=7,
+        consecutive_passes_required=3,
+    )
+
+    # Pass 1 — not enough yet.
+    assert not manager.update_from_evaluation({"success_rate": 0.6})
+    assert manager.stage_index == 0
+    assert manager._consecutive_passes == 1
+
+    # Pass 2 — still not enough.
+    assert not manager.update_from_evaluation({"success_rate": 0.7})
+    assert manager.stage_index == 0
+    assert manager._consecutive_passes == 2
+
+    # A failure resets the streak.
+    assert not manager.update_from_evaluation({"success_rate": 0.4})
+    assert manager.stage_index == 0
+    assert manager._consecutive_passes == 0
+
+    # Pass 1 again.
+    assert not manager.update_from_evaluation({"success_rate": 0.5})
+    assert manager._consecutive_passes == 1
+
+    # Pass 2.
+    assert not manager.update_from_evaluation({"success_rate": 0.8})
+    assert manager._consecutive_passes == 2
+
+    # Pass 3 — promotes!
+    assert manager.update_from_evaluation({"success_rate": 0.9})
+    assert manager.stage_index == 1
+    assert manager._consecutive_passes == 0
 
 
 def test_curriculum_can_restore_stage_state() -> None:
@@ -108,6 +148,7 @@ def test_curriculum_evaluation_callback_advances_and_emits_metrics() -> None:
             CurriculumStage("second", ("easy",), eval_difficulty="easy"),
         ),
         seed=7,
+        consecutive_passes_required=1,
     )
     events = []
 
